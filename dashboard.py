@@ -288,7 +288,7 @@ with tab2:
                         fig = go.Figure(go.Indicator(
                             mode="gauge+number",
                             value=severity_score,
-                            domain={'x': [0, 10], 'y': [0, 10]},
+                            domain={'x': [0, 1], 'y': [0, 1]},
                             title={'text': "Severity Level"},
                             gauge={
                                 'axis': {'range': [0, 10]},
@@ -327,7 +327,7 @@ with tab2:
                         fig = go.Figure(go.Indicator(
                             mode="gauge+number+delta",
                             value=risk_prob*100,
-                            domain={'x': [0, 100], 'y': [0, 100]},
+                            domain={'x': [0, 1], 'y': [0, 1]},
                             title={'text': "Risk %"},
                             gauge={
                                 'axis': {'range': [0, 100]},
