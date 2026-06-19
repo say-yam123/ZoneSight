@@ -59,6 +59,15 @@ HOTSPOT_ZONES = {
     'Zone 3': {'station': 'Chikkajala', 'lat_range': [13.23, 13.29], 'lon_range': [77.52, 77.57]},
 }
 
+CLUSTER_VIOLATION_COUNTS = {
+    0: 69076,
+    1: 48600,
+    2: 25154,
+    3: 6881,
+    4: 21920,
+    5: 123778,
+}
+
 # Cluster → station mapping (from notebook hotspot_summary)
 CLUSTER_TO_STATION = {
     5: 'Upparpet',
@@ -259,6 +268,106 @@ def zone_analytics():
         'Zone 3': {'violations': 6881, 'high_severity': 34.3, 'resources': '1 patrol unit'},
     }
     return jsonify(zone_stats), 200
+
+@app.route('/analytics/map', methods=['GET'])
+def analytics_map():
+    """
+    Returns per-zone stats computed from the trained models.
+    Centroid positions come from KMeans + geo_scaler.
+    Severity stats come from GBR predictions over a grid around each centroid.
+    """
+    if kmeans_model is None or geo_scaler is None or gbr_model is None:
+        return jsonify({'error': 'Models not loaded'}), 503
+ 
+    try:
+        # Step 1: Get cluster centroids in original lat/lon space
+        centroids_scaled   = kmeans_model.cluster_centers_          # shape (6, 2)
+        centroids_original = geo_scaler.inverse_transform(centroids_scaled)  # lat, lon
+ 
+        zones = []
+ 
+        for cluster_id in range(len(centroids_original)):
+            clat, clon = centroids_original[cluster_id]
+ 
+            # Step 2: Build a small grid (5x5) around the centroid
+            # to sample GBR severity predictions across the zone
+            lat_offsets = np.linspace(-0.02, 0.02, 5)
+            lon_offsets = np.linspace(-0.02, 0.02, 5)
+ 
+            severity_scores = []
+            high_severity_count = 0
+            peak_hour_count = 0
+            total_grid_points = 0
+ 
+            for dlat in lat_offsets:
+                for dlon in lon_offsets:
+                    # Sample with representative feature values
+                    # Test both peak and off-peak, main road and not
+                    for hour, is_peak in [(8, 1), (14, 0), (18, 1)]:
+                        for has_main in [0, 1]:
+                            sample = {
+                                'latitude':          clat + dlat,
+                                'longitude':         clon + dlon,
+                                'cell_violations':   50,   # median-ish value
+                                'cell_density':      0.5,
+                                'hour':              hour,
+                                'day_of_week':       3,
+                                'is_peak_hour':      is_peak,
+                                'has_wrong_parking': 1,
+                                'has_no_parking':    0,
+                                'has_main_road':     has_main,
+                            }
+                            X = prepare_features(sample)
+                            if X is not None:
+                                score = float(np.clip(gbr_model.predict(X)[0], 1.0, 5.0))
+                                severity_scores.append(score)
+                                if score >= 4:
+                                    high_severity_count += 1
+                                if is_peak:
+                                    peak_hour_count += 1
+                                total_grid_points += 1
+ 
+            if not severity_scores:
+                continue
+ 
+            avg_severity      = float(np.mean(severity_scores))
+            max_severity      = float(np.max(severity_scores))
+            high_severity_pct = (high_severity_count / total_grid_points) * 100
+            peak_hour_pct     = (peak_hour_count     / total_grid_points) * 100
+ 
+            violation_count = CLUSTER_VIOLATION_COUNTS.get(cluster_id, 0)
+ 
+            # Wrong parking and main road counts estimated from violation proportions
+            # (from notebook: ~55% wrong parking in top zones, ~8% main road)
+            wrong_parking_count = int(violation_count * 0.55)
+            main_road_count     = int(violation_count * 0.08)
+ 
+            zones.append({
+                'zone':               f'Zone {cluster_id}',
+                'cluster_id':         cluster_id,
+                'station':            CLUSTER_TO_STATION.get(cluster_id, 'N/A'),
+                'centroid_lat':       round(float(clat), 5),
+                'centroid_lon':       round(float(clon), 5),
+                'violation_count':    violation_count,
+                'avg_severity':       round(avg_severity, 3),
+                'max_severity':       round(max_severity, 3),
+                'high_severity_pct':  round(high_severity_pct, 1),
+                'peak_hour_pct':      round(peak_hour_pct, 1),
+                'wrong_parking_count': wrong_parking_count,
+                'main_road_count':    main_road_count,
+            })
+ 
+        # Sort by violation count descending
+        zones.sort(key=lambda z: z['violation_count'], reverse=True)
+ 
+        return jsonify({
+            'zones':     zones,
+            'timestamp': datetime.now().isoformat(),
+            'source':    'kmeans_centroids + gbr_predictions',
+        }), 200
+ 
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 def classify_severity(score):
     """Notebook violation_severity is 1–5, not 0–10."""
