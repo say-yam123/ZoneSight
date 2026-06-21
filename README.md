@@ -58,7 +58,11 @@ You should see all 5 models confirmed in the terminal:
 ```bash
 streamlit run dashboard.py
 ```
-
+OR
+If you are not running it in venv:
+```bash
+python -m streamlit run dashboard.py
+```
 **Step 5: Open Browser**
 ```
 Frontend: http://localhost:8501
